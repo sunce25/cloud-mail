@@ -4,6 +4,7 @@ on:
   push:
     branches: [ main ]
     paths:
+      - ".github/workflows/deploy-cloudflare.yml"
       - "mail-worker/**"
       - "mail-vue/**"
   workflow_dispatch:
