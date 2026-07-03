@@ -129,6 +129,7 @@ jobs:
                 | cut -c1-63 \
                 | sed -E 's/-+$//')
             fi
+            echo "WORKERS_DEV_SUBDOMAIN=$WORKERS_DEV_SUBDOMAIN" >> "$GITHUB_ENV"
 
             if [ -z "$WORKERS_DEV_SUBDOMAIN" ]; then
               echo "::error::WORKERS_DEV_SUBDOMAIN is empty. Set it to a unique workers.dev account subdomain."
@@ -350,13 +351,23 @@ jobs:
         working-directory: ./mail-worker
         run: |
           echo "🚀 Starting deployment..."
-          pnpm wrangler deploy -c wrangler-action.toml 2>&1 \
-            | tee deploy.log \
-            | grep -v "https://.*\.workers\.dev" \
-            | sed -E 's/env\.domain .*/env.domain (***)/' \
-            || true
+          if [ "$USE_CUSTOM_DOMAIN" != "true" ] && [ -n "$WORKERS_DEV_SUBDOMAIN" ]; then
+            printf 'y\n%s\ny\n' "$WORKERS_DEV_SUBDOMAIN" \
+              | pnpm wrangler deploy -c wrangler-action.toml 2>&1 \
+              | tee deploy.log \
+              | grep -v "https://.*\.workers\.dev" \
+              | sed -E 's/env\.domain .*/env.domain (***)/' \
+              || true
+            DEPLOY_EXIT_CODE=${PIPESTATUS[1]}
+          else
+            pnpm wrangler deploy -c wrangler-action.toml 2>&1 \
+              | tee deploy.log \
+              | grep -v "https://.*\.workers\.dev" \
+              | sed -E 's/env\.domain .*/env.domain (***)/' \
+              || true
+            DEPLOY_EXIT_CODE=${PIPESTATUS[0]}
+          fi
           
-          DEPLOY_EXIT_CODE=${PIPESTATUS[0]}
           if [ $DEPLOY_EXIT_CODE -ne 0 ]; then
             echo "::error::Wrangler deploy failed. Last deploy log lines are shown below."
             grep -Ei 'ERROR|Error|error|Failed|failed|Could not|Invalid|workers\.dev|subdomain|permission|account|route|zone|deploy' deploy.log \
