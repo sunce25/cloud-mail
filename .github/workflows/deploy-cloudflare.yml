@@ -122,27 +122,6 @@ jobs:
           ensure_workers_dev_subdomain() {
             echo "Checking workers.dev subdomain..."
 
-            set +e
-            SUBDOMAIN_RESPONSE=$(curl -sS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
-              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              -H "Content-Type: application/json")
-            SUBDOMAIN_STATUS=$?
-            set -e
-
-            if [ $SUBDOMAIN_STATUS -ne 0 ]; then
-              echo "::error::Unable to check workers.dev subdomain. curl exited with $SUBDOMAIN_STATUS. Check CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
-              exit 1
-            fi
-
-            set +e
-            CURRENT_WORKERS_DEV_SUBDOMAIN=$(echo "$SUBDOMAIN_RESPONSE" | jq -r '.result.subdomain // empty' 2>/dev/null)
-            set -e
-
-            if [ -n "$CURRENT_WORKERS_DEV_SUBDOMAIN" ]; then
-              echo "workers.dev subdomain is already registered."
-              return 0
-            fi
-
             if [ -z "$WORKERS_DEV_SUBDOMAIN" ]; then
               WORKERS_DEV_SUBDOMAIN=$(printf '%s-%s' "$GITHUB_REPOSITORY_OWNER" "$NAME" \
                 | tr '[:upper:]' '[:lower:]' \
