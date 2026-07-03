@@ -39,6 +39,7 @@ jobs:
       CLOUDFLARE_EMAIL: ${{ secrets.CF_EMAIL || vars.CF_EMAIL || false }}
       ANALYSIS_CACHE: ${{ secrets.ANALYSIS_CACHE || vars.ANALYSIS_CACHE || false }}
       SKIP_CUSTOM_DOMAIN: ${{ github.event.inputs.skip_custom_domain || secrets.SKIP_CUSTOM_DOMAIN || vars.SKIP_CUSTOM_DOMAIN || false }}
+      WORKERS_DEV_SUBDOMAIN: ${{ secrets.WORKERS_DEV_SUBDOMAIN || vars.WORKERS_DEV_SUBDOMAIN }}
       LINUXDO_CLIENT_ID: ${{ secrets.LINUXDO_CLIENT_ID || vars.LINUXDO_CLIENT_ID }}
       LINUXDO_CLIENT_SECRET: ${{ secrets.LINUXDO_CLIENT_SECRET || vars.LINUXDO_CLIENT_SECRET }}
       LINUXDO_CALLBACK_URL: ${{ secrets.LINUXDO_CALLBACK_URL || vars.LINUXDO_CALLBACK_URL }}
@@ -115,6 +116,46 @@ jobs:
           echo "USE_CUSTOM_DOMAIN=$USE_CUSTOM_DOMAIN" >> "$GITHUB_ENV"
           
           CONFIG_FILE="wrangler-action.toml"
+
+          ensure_workers_dev_subdomain() {
+            echo "Checking workers.dev subdomain..."
+
+            SUBDOMAIN_RESPONSE=$(curl -sS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Content-Type: application/json")
+
+            if echo "$SUBDOMAIN_RESPONSE" | jq -e '.success == true and .result.subdomain != null and .result.subdomain != ""' >/dev/null; then
+              echo "workers.dev subdomain is already registered."
+              return 0
+            fi
+
+            if [ -z "$WORKERS_DEV_SUBDOMAIN" ]; then
+              WORKERS_DEV_SUBDOMAIN=$(printf '%s-%s' "$GITHUB_REPOSITORY_OWNER" "$NAME" \
+                | tr '[:upper:]' '[:lower:]' \
+                | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//' \
+                | cut -c1-63 \
+                | sed -E 's/-+$//')
+            fi
+
+            if [ -z "$WORKERS_DEV_SUBDOMAIN" ]; then
+              echo "::error::WORKERS_DEV_SUBDOMAIN is empty. Set it to a unique workers.dev account subdomain."
+              exit 1
+            fi
+
+            echo "Registering workers.dev subdomain..."
+            CREATE_SUBDOMAIN_RESPONSE=$(curl -sS -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "{\"subdomain\":\"$WORKERS_DEV_SUBDOMAIN\"}")
+
+            if ! echo "$CREATE_SUBDOMAIN_RESPONSE" | jq -e '.success == true' >/dev/null; then
+              echo "$CREATE_SUBDOMAIN_RESPONSE" | jq -r '.errors[]? | "::error::Cloudflare workers.dev subdomain error: \(.message)"'
+              echo "::error::Unable to register workers.dev subdomain. Set repository variable WORKERS_DEV_SUBDOMAIN to a different unique value, or connect CUSTOM_DOMAIN to this Cloudflare account."
+              exit 1
+            fi
+
+            echo "Registered workers.dev subdomain."
+          }
           
           if [ -z "$R2_BUCKET_NAME" ]; then
             sed -i '/\[\[r2_buckets\]\]/,/^$/d' "$CONFIG_FILE"
@@ -130,6 +171,7 @@ jobs:
           
           if [ "$USE_CUSTOM_DOMAIN" != "true" ]; then
             sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
+            ensure_workers_dev_subdomain
           else
             DOMAIN_HOST=$(printf '%s' "$CUSTOM_DOMAIN" | sed -E 's#^https?://##; s#/.*$##; s#^\*\.##')
             if [ -z "$DOMAIN_HOST" ]; then
@@ -172,12 +214,14 @@ jobs:
             if [ "$USE_CUSTOM_DOMAIN" != "true" ]; then
               sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
               echo "USE_CUSTOM_DOMAIN=false" >> "$GITHUB_ENV"
+              ensure_workers_dev_subdomain
             elif [ -z "$ZONE_NAME" ]; then
               echo "::warning:: Could not find a Cloudflare zone for CUSTOM_DOMAIN=$DOMAIN_HOST in the configured account. Falling back to workers.dev deployment."
               echo "::warning:: Add the root domain to Cloudflare, switch the domain nameservers to Cloudflare, and wait until the zone is Active before using the custom domain."
               USE_CUSTOM_DOMAIN="false"
               sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
               echo "USE_CUSTOM_DOMAIN=false" >> "$GITHUB_ENV"
+              ensure_workers_dev_subdomain
             else
               echo "Found Cloudflare zone $ZONE_NAME for CUSTOM_DOMAIN."
             fi
