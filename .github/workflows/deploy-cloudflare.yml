@@ -297,7 +297,8 @@ jobs:
           DEPLOY_EXIT_CODE=${PIPESTATUS[0]}
           if [ $DEPLOY_EXIT_CODE -ne 0 ]; then
             echo "::error::Wrangler deploy failed. Last deploy log lines are shown below."
-            tail -n 80 deploy.log \
+            grep -Ei 'ERROR|Error|error|Failed|failed|Could not|Invalid|workers\.dev|subdomain|permission|account|route|zone|deploy' deploy.log \
+              | tail -n 40 \
               | grep -v "https://.*\.workers\.dev" \
               | sed -E 's/env\.domain .*/env.domain (***)/' \
               | sed -E 's/(Authorization: Bearer )[A-Za-z0-9._-]+/\1***/g' \
