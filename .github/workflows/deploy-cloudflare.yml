@@ -301,6 +301,11 @@ jobs:
               | grep -v "https://.*\.workers\.dev" \
               | sed -E 's/env\.domain .*/env.domain (***)/' \
               | sed -E 's/(Authorization: Bearer )[A-Za-z0-9._-]+/\1***/g' \
+              | while IFS= read -r line; do
+                  if [ -n "$line" ]; then
+                    echo "::error::$line"
+                  fi
+                done \
               || true
             exit 1
           fi
