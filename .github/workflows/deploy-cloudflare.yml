@@ -170,6 +170,8 @@ jobs:
             fi
 
             echo "Registered workers.dev subdomain."
+            echo "Waiting for workers.dev DNS to become available..."
+            sleep 90
           }
           
           if [ -z "$R2_BUCKET_NAME" ]; then
