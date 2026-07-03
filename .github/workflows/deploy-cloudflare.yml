@@ -7,6 +7,15 @@ on:
       - "mail-worker/**"
       - "mail-vue/**"
   workflow_dispatch:
+    inputs:
+      skip_custom_domain:
+        description: "Deploy to workers.dev without binding CUSTOM_DOMAIN"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   Deploy-cloud-mail:
@@ -28,6 +37,7 @@ jobs:
       AI_MODEL: ${{ secrets.AI_MODEL || vars.AI_MODEL || '@cf/meta/llama-3.1-8b-instruct' }}
       CLOUDFLARE_EMAIL: ${{ secrets.CF_EMAIL || vars.CF_EMAIL || false }}
       ANALYSIS_CACHE: ${{ secrets.ANALYSIS_CACHE || vars.ANALYSIS_CACHE || false }}
+      SKIP_CUSTOM_DOMAIN: ${{ github.event.inputs.skip_custom_domain || secrets.SKIP_CUSTOM_DOMAIN || vars.SKIP_CUSTOM_DOMAIN || false }}
       LINUXDO_CLIENT_ID: ${{ secrets.LINUXDO_CLIENT_ID || vars.LINUXDO_CLIENT_ID }}
       LINUXDO_CLIENT_SECRET: ${{ secrets.LINUXDO_CLIENT_SECRET || vars.LINUXDO_CLIENT_SECRET }}
       LINUXDO_CALLBACK_URL: ${{ secrets.LINUXDO_CALLBACK_URL || vars.LINUXDO_CALLBACK_URL }}
@@ -93,9 +103,15 @@ jobs:
             exit 1
           fi
           
-          if [ -z "$CUSTOM_DOMAIN" ]; then
-            echo "::warning:: CUSTOM_DOMAIN variable is not set."
+          USE_CUSTOM_DOMAIN="true"
+          if [ "$(printf '%s' "$SKIP_CUSTOM_DOMAIN" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+            USE_CUSTOM_DOMAIN="false"
+            echo "::warning:: SKIP_CUSTOM_DOMAIN is true. The Worker will deploy to workers.dev without a custom domain route."
+          elif [ -z "$CUSTOM_DOMAIN" ]; then
+            USE_CUSTOM_DOMAIN="false"
+            echo "::warning:: CUSTOM_DOMAIN variable is not set. The Worker will deploy to workers.dev without a custom domain route."
           fi
+          echo "USE_CUSTOM_DOMAIN=$USE_CUSTOM_DOMAIN" >> "$GITHUB_ENV"
           
           CONFIG_FILE="wrangler-action.toml"
           
@@ -111,8 +127,44 @@ jobs:
             sed -i '/^linuxdo_client_id = /,/^linuxdo_switch = /d' "$CONFIG_FILE"
           fi
           
-          if [ -z "$CUSTOM_DOMAIN" ]; then
+          if [ "$USE_CUSTOM_DOMAIN" != "true" ]; then
             sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
+          else
+            DOMAIN_HOST=$(printf '%s' "$CUSTOM_DOMAIN" | sed -E 's#^https?://##; s#/.*$##; s#^\*\.##')
+            if [ -z "$DOMAIN_HOST" ]; then
+              echo "CUSTOM_DOMAIN must be a domain name, for example mail.example.com."
+              exit 1
+            fi
+
+            ZONE_NAME=""
+            IFS='.' read -ra DOMAIN_PARTS <<< "$DOMAIN_HOST"
+            for ((i=0; i<${#DOMAIN_PARTS[@]}-1; i++)); do
+              CANDIDATE=$(IFS='.'; echo "${DOMAIN_PARTS[*]:$i}")
+              ZONE_RESPONSE=$(curl -sS -G "https://api.cloudflare.com/client/v4/zones" \
+                --data-urlencode "name=$CANDIDATE" \
+                --data-urlencode "account.id=$CLOUDFLARE_ACCOUNT_ID" \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                -H "Content-Type: application/json")
+
+              if echo "$ZONE_RESPONSE" | jq -e '.success == true and (.result | length > 0)' >/dev/null; then
+                ZONE_NAME="$CANDIDATE"
+                break
+              fi
+
+              if echo "$ZONE_RESPONSE" | jq -e '.success != true' >/dev/null; then
+                echo "$ZONE_RESPONSE" | jq -r '.errors[]? | "Cloudflare API error: \(.message)"'
+                echo "Unable to verify CUSTOM_DOMAIN because Cloudflare rejected the API request."
+                exit 1
+              fi
+            done
+
+            if [ -z "$ZONE_NAME" ]; then
+              echo "Could not find a Cloudflare zone for CUSTOM_DOMAIN=$DOMAIN_HOST in the configured account."
+              echo "Add the root domain to Cloudflare, switch the domain nameservers to Cloudflare, wait until the zone is Active, or set SKIP_CUSTOM_DOMAIN=true to deploy to workers.dev first."
+              exit 1
+            fi
+
+            echo "Found Cloudflare zone $ZONE_NAME for CUSTOM_DOMAIN."
           fi
           
           if [ "$(printf '%s' "$CLOUDFLARE_EMAIL" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
@@ -245,11 +297,14 @@ jobs:
           echo "🛠️ Starting database initialization..."
           sleep 15
           
-          WORKER_URL="${CUSTOM_DOMAIN:+https://$CUSTOM_DOMAIN}"
-          WORKER_URL="${WORKER_URL:-${{ steps.deploy.outputs.worker_url }}}"
+          if [ "$USE_CUSTOM_DOMAIN" = "true" ]; then
+            WORKER_URL="https://$CUSTOM_DOMAIN"
+          else
+            WORKER_URL="${{ steps.deploy.outputs.worker_url }}"
+          fi
           
           if [ -z "$WORKER_URL" ]; then
-            echo "❌ Preview URL not available. Please set CUSTOM_DOMAIN."
+            echo "❌ Worker URL not available. Set CUSTOM_DOMAIN, or deploy with workers.dev enabled and SKIP_CUSTOM_DOMAIN=true."
             exit 1
           fi
           
