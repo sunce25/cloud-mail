@@ -222,7 +222,16 @@ jobs:
               fi
 
               if echo "$ZONE_RESPONSE" | jq -e '.success != true' >/dev/null; then
-                echo "$ZONE_RESPONSE" | jq -r '.errors[]? | "Cloudflare API error: \(.message)"'
+                set +e
+                CF_ZONE_ERRORS=$(echo "$ZONE_RESPONSE" | jq -r '.errors[]?.message // empty' 2>/dev/null)
+                set -e
+                if [ -n "$CF_ZONE_ERRORS" ]; then
+                  while IFS= read -r line; do
+                    echo "Cloudflare API error: $line"
+                  done <<< "$CF_ZONE_ERRORS"
+                else
+                  echo "Cloudflare API error response: $ZONE_RESPONSE"
+                fi
                 echo "::warning:: Unable to verify CUSTOM_DOMAIN because Cloudflare rejected the API request. Falling back to workers.dev deployment."
                 USE_CUSTOM_DOMAIN="false"
                 break
