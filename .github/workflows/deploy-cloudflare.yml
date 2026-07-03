@@ -141,11 +141,20 @@ jobs:
             IFS='.' read -ra DOMAIN_PARTS <<< "$DOMAIN_HOST"
             for ((i=0; i<${#DOMAIN_PARTS[@]}-1; i++)); do
               CANDIDATE=$(IFS='.'; echo "${DOMAIN_PARTS[*]:$i}")
+              set +e
               ZONE_RESPONSE=$(curl -sS -G "https://api.cloudflare.com/client/v4/zones" \
                 --data-urlencode "name=$CANDIDATE" \
                 --data-urlencode "account.id=$CLOUDFLARE_ACCOUNT_ID" \
                 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
                 -H "Content-Type: application/json")
+              ZONE_STATUS=$?
+              set -e
+
+              if [ $ZONE_STATUS -ne 0 ]; then
+                echo "::warning:: Unable to check Cloudflare zone for $CANDIDATE. Falling back to workers.dev deployment."
+                USE_CUSTOM_DOMAIN="false"
+                break
+              fi
 
               if echo "$ZONE_RESPONSE" | jq -e '.success == true and (.result | length > 0)' >/dev/null; then
                 ZONE_NAME="$CANDIDATE"
@@ -154,18 +163,24 @@ jobs:
 
               if echo "$ZONE_RESPONSE" | jq -e '.success != true' >/dev/null; then
                 echo "$ZONE_RESPONSE" | jq -r '.errors[]? | "Cloudflare API error: \(.message)"'
-                echo "Unable to verify CUSTOM_DOMAIN because Cloudflare rejected the API request."
-                exit 1
+                echo "::warning:: Unable to verify CUSTOM_DOMAIN because Cloudflare rejected the API request. Falling back to workers.dev deployment."
+                USE_CUSTOM_DOMAIN="false"
+                break
               fi
             done
 
-            if [ -z "$ZONE_NAME" ]; then
-              echo "Could not find a Cloudflare zone for CUSTOM_DOMAIN=$DOMAIN_HOST in the configured account."
-              echo "Add the root domain to Cloudflare, switch the domain nameservers to Cloudflare, wait until the zone is Active, or set SKIP_CUSTOM_DOMAIN=true to deploy to workers.dev first."
-              exit 1
+            if [ "$USE_CUSTOM_DOMAIN" != "true" ]; then
+              sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
+              echo "USE_CUSTOM_DOMAIN=false" >> "$GITHUB_ENV"
+            elif [ -z "$ZONE_NAME" ]; then
+              echo "::warning:: Could not find a Cloudflare zone for CUSTOM_DOMAIN=$DOMAIN_HOST in the configured account. Falling back to workers.dev deployment."
+              echo "::warning:: Add the root domain to Cloudflare, switch the domain nameservers to Cloudflare, and wait until the zone is Active before using the custom domain."
+              USE_CUSTOM_DOMAIN="false"
+              sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
+              echo "USE_CUSTOM_DOMAIN=false" >> "$GITHUB_ENV"
+            else
+              echo "Found Cloudflare zone $ZONE_NAME for CUSTOM_DOMAIN."
             fi
-
-            echo "Found Cloudflare zone $ZONE_NAME for CUSTOM_DOMAIN."
           fi
           
           if [ "$(printf '%s' "$CLOUDFLARE_EMAIL" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
