@@ -104,6 +104,8 @@ jobs:
             echo "❌ CLOUDFLARE_API_TOKEN variable cannot be empty."
             exit 1
           fi
+
+          CLOUDFLARE_ACCOUNT_ID=$(printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | tr -d '[:space:]')
           
           USE_CUSTOM_DOMAIN="true"
           if [ "$(printf '%s' "$SKIP_CUSTOM_DOMAIN" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
@@ -120,9 +122,17 @@ jobs:
           ensure_workers_dev_subdomain() {
             echo "Checking workers.dev subdomain..."
 
+            set +e
             SUBDOMAIN_RESPONSE=$(curl -sS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
               -H "Content-Type: application/json")
+            SUBDOMAIN_STATUS=$?
+            set -e
+
+            if [ $SUBDOMAIN_STATUS -ne 0 ]; then
+              echo "::error::Unable to check workers.dev subdomain. curl exited with $SUBDOMAIN_STATUS. Check CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
+              exit 1
+            fi
 
             set +e
             CURRENT_WORKERS_DEV_SUBDOMAIN=$(echo "$SUBDOMAIN_RESPONSE" | jq -r '.result.subdomain // empty' 2>/dev/null)
@@ -147,10 +157,18 @@ jobs:
             fi
 
             echo "Registering workers.dev subdomain: $WORKERS_DEV_SUBDOMAIN"
+            set +e
             CREATE_SUBDOMAIN_RESPONSE=$(curl -sS -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data "{\"subdomain\":\"$WORKERS_DEV_SUBDOMAIN\"}")
+            CREATE_SUBDOMAIN_STATUS=$?
+            set -e
+
+            if [ $CREATE_SUBDOMAIN_STATUS -ne 0 ]; then
+              echo "::error::Unable to register workers.dev subdomain. curl exited with $CREATE_SUBDOMAIN_STATUS. Check CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
+              exit 1
+            fi
 
             set +e
             CREATE_SUBDOMAIN_SUCCESS=$(echo "$CREATE_SUBDOMAIN_RESPONSE" | jq -r '.success // false' 2>/dev/null)
