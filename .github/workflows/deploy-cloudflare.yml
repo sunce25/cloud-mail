@@ -124,7 +124,11 @@ jobs:
               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
               -H "Content-Type: application/json")
 
-            if echo "$SUBDOMAIN_RESPONSE" | jq -e '.success == true and .result.subdomain != null and .result.subdomain != ""' >/dev/null; then
+            set +e
+            CURRENT_WORKERS_DEV_SUBDOMAIN=$(echo "$SUBDOMAIN_RESPONSE" | jq -r '.result.subdomain // empty' 2>/dev/null)
+            set -e
+
+            if [ -n "$CURRENT_WORKERS_DEV_SUBDOMAIN" ]; then
               echo "workers.dev subdomain is already registered."
               return 0
             fi
@@ -148,7 +152,11 @@ jobs:
               -H "Content-Type: application/json" \
               --data "{\"subdomain\":\"$WORKERS_DEV_SUBDOMAIN\"}")
 
-            if ! echo "$CREATE_SUBDOMAIN_RESPONSE" | jq -e '.success == true' >/dev/null; then
+            set +e
+            CREATE_SUBDOMAIN_SUCCESS=$(echo "$CREATE_SUBDOMAIN_RESPONSE" | jq -r '.success // false' 2>/dev/null)
+            set -e
+
+            if [ "$CREATE_SUBDOMAIN_SUCCESS" != "true" ]; then
               set +e
               CF_SUBDOMAIN_ERRORS=$(echo "$CREATE_SUBDOMAIN_RESPONSE" | jq -r '.errors[]?.message // empty' 2>/dev/null)
               set -e
