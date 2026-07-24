@@ -118,6 +118,32 @@ jobs:
           
           CONFIG_FILE="wrangler-action.toml"
 
+          require_workers_dev_subdomain() {
+            echo "Checking workers.dev subdomain..."
+
+            set +e
+            SUBDOMAIN_RESPONSE=$(curl -sS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Content-Type: application/json")
+            SUBDOMAIN_STATUS=$?
+            set -e
+
+            if [ $SUBDOMAIN_STATUS -ne 0 ]; then
+              echo "::error::Unable to check workers.dev subdomain. Check CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
+              exit 1
+            fi
+
+            if printf '%s' "$SUBDOMAIN_RESPONSE" | grep -q '"subdomain"[[:space:]]*:[[:space:]]*"[a-z0-9][a-z0-9-]*"'; then
+              echo "workers.dev subdomain is registered."
+              return 0
+            fi
+
+            echo "::error::This Cloudflare account has no workers.dev subdomain yet, so workers.dev deployment cannot be used."
+            echo "::error::Open https://dash.cloudflare.com/$CLOUDFLARE_ACCOUNT_ID/workers/onboarding and register a workers.dev subdomain, then rerun this workflow."
+            echo "::error::Or set CUSTOM_DOMAIN to a domain that is Active in this same Cloudflare account."
+            exit 1
+          }
+          
           if [ -z "$R2_BUCKET_NAME" ]; then
             sed -i '/\[\[r2_buckets\]\]/,/^$/d' "$CONFIG_FILE"
           fi
@@ -132,6 +158,7 @@ jobs:
           
           if [ "$USE_CUSTOM_DOMAIN" != "true" ]; then
             sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
+            require_workers_dev_subdomain
           else
             DOMAIN_HOST=$(printf '%s' "$CUSTOM_DOMAIN" | sed -E 's#^https?://##; s#/.*$##; s#^\*\.##')
             if [ -z "$DOMAIN_HOST" ]; then
