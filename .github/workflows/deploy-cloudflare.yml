@@ -118,37 +118,6 @@ jobs:
           
           CONFIG_FILE="wrangler-action.toml"
 
-          ensure_workers_dev_subdomain() {
-            echo "Checking workers.dev subdomain..."
-
-            set +e
-            SUBDOMAIN_RESPONSE=$(curl -sS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
-              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              -H "Content-Type: application/json")
-            SUBDOMAIN_STATUS=$?
-            set -e
-
-            if [ $SUBDOMAIN_STATUS -ne 0 ]; then
-              echo "::error::Unable to check workers.dev subdomain. Check CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
-              exit 1
-            fi
-
-            if printf '%s' "$SUBDOMAIN_RESPONSE" | grep -q '"subdomain"[[:space:]]*:[[:space:]]*"[^"]\+"'; then
-              echo "workers.dev subdomain is registered."
-              return 0
-            fi
-
-            if printf '%s' "$SUBDOMAIN_RESPONSE" | grep -q '"code"[[:space:]]*:[[:space:]]*10007'; then
-              echo "::error::This Cloudflare account has no workers.dev subdomain yet."
-              echo "::error::Open https://dash.cloudflare.com/$CLOUDFLARE_ACCOUNT_ID/workers/onboarding and register a workers.dev subdomain, then rerun this workflow."
-              echo "::error::Alternatively, connect CUSTOM_DOMAIN to this same Cloudflare account and wait until the zone is Active."
-              exit 1
-            fi
-
-            echo "::error::Unable to verify workers.dev subdomain. Cloudflare response: $SUBDOMAIN_RESPONSE"
-            exit 1
-          }
-          
           if [ -z "$R2_BUCKET_NAME" ]; then
             sed -i '/\[\[r2_buckets\]\]/,/^$/d' "$CONFIG_FILE"
           fi
@@ -163,7 +132,6 @@ jobs:
           
           if [ "$USE_CUSTOM_DOMAIN" != "true" ]; then
             sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
-            ensure_workers_dev_subdomain
           else
             DOMAIN_HOST=$(printf '%s' "$CUSTOM_DOMAIN" | sed -E 's#^https?://##; s#/.*$##; s#^\*\.##')
             if [ -z "$DOMAIN_HOST" ]; then
@@ -185,9 +153,8 @@ jobs:
               set -e
 
               if [ $ZONE_STATUS -ne 0 ]; then
-                echo "::warning:: Unable to check Cloudflare zone for $CANDIDATE. Falling back to workers.dev deployment."
-                USE_CUSTOM_DOMAIN="false"
-                break
+                echo "::error::Unable to check Cloudflare zone for $CANDIDATE. Check CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
+                exit 1
               fi
 
               if printf '%s' "$ZONE_RESPONSE" | grep -q '"success"[[:space:]]*:[[:space:]]*true' \
@@ -198,23 +165,16 @@ jobs:
 
               if ! printf '%s' "$ZONE_RESPONSE" | grep -q '"success"[[:space:]]*:[[:space:]]*true'; then
                 echo "Cloudflare API error response: $ZONE_RESPONSE"
-                echo "::warning:: Unable to verify CUSTOM_DOMAIN because Cloudflare rejected the API request. Falling back to workers.dev deployment."
-                USE_CUSTOM_DOMAIN="false"
-                break
+                echo "::error::Unable to verify CUSTOM_DOMAIN because Cloudflare rejected the API request."
+                exit 1
               fi
             done
 
-            if [ "$USE_CUSTOM_DOMAIN" != "true" ]; then
-              sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
-              echo "USE_CUSTOM_DOMAIN=false" >> "$GITHUB_ENV"
-              ensure_workers_dev_subdomain
-            elif [ -z "$ZONE_NAME" ]; then
-              echo "::warning:: Could not find a Cloudflare zone for CUSTOM_DOMAIN=$DOMAIN_HOST in the configured account. Falling back to workers.dev deployment."
-              echo "::warning:: Add the root domain to Cloudflare, switch the domain nameservers to Cloudflare, and wait until the zone is Active before using the custom domain."
-              USE_CUSTOM_DOMAIN="false"
-              sed -i '/\[\[routes\]\]/,/^$/d' "$CONFIG_FILE"
-              echo "USE_CUSTOM_DOMAIN=false" >> "$GITHUB_ENV"
-              ensure_workers_dev_subdomain
+            if [ -z "$ZONE_NAME" ]; then
+              echo "::error::Could not find a Cloudflare zone for CUSTOM_DOMAIN=$DOMAIN_HOST in the configured account."
+              echo "::error::Add the root domain to this Cloudflare account, switch the domain nameservers to Cloudflare, and wait until the zone is Active."
+              echo "::error::For a temporary workers.dev deployment, rerun this workflow manually with skip_custom_domain=true after registering a workers.dev subdomain at https://dash.cloudflare.com/$CLOUDFLARE_ACCOUNT_ID/workers/onboarding."
+              exit 1
             else
               echo "Found Cloudflare zone $ZONE_NAME for CUSTOM_DOMAIN."
             fi
