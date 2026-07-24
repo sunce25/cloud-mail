@@ -39,7 +39,6 @@ jobs:
       CLOUDFLARE_EMAIL: ${{ secrets.CF_EMAIL || vars.CF_EMAIL || false }}
       ANALYSIS_CACHE: ${{ secrets.ANALYSIS_CACHE || vars.ANALYSIS_CACHE || false }}
       SKIP_CUSTOM_DOMAIN: ${{ github.event.inputs.skip_custom_domain || secrets.SKIP_CUSTOM_DOMAIN || vars.SKIP_CUSTOM_DOMAIN || false }}
-      WORKERS_DEV_SUBDOMAIN: ${{ secrets.WORKERS_DEV_SUBDOMAIN || vars.WORKERS_DEV_SUBDOMAIN }}
       LINUXDO_CLIENT_ID: ${{ secrets.LINUXDO_CLIENT_ID || vars.LINUXDO_CLIENT_ID }}
       LINUXDO_CLIENT_SECRET: ${{ secrets.LINUXDO_CLIENT_SECRET || vars.LINUXDO_CLIENT_SECRET }}
       LINUXDO_CALLBACK_URL: ${{ secrets.LINUXDO_CALLBACK_URL || vars.LINUXDO_CALLBACK_URL }}
@@ -122,57 +121,32 @@ jobs:
           ensure_workers_dev_subdomain() {
             echo "Checking workers.dev subdomain..."
 
-            if [ -z "$WORKERS_DEV_SUBDOMAIN" ]; then
-              WORKERS_DEV_SUBDOMAIN=$(printf '%s-%s' "$GITHUB_REPOSITORY_OWNER" "$NAME" \
-                | tr '[:upper:]' '[:lower:]' \
-                | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//' \
-                | cut -c1-63 \
-                | sed -E 's/-+$//')
-            fi
-            echo "WORKERS_DEV_SUBDOMAIN=$WORKERS_DEV_SUBDOMAIN" >> "$GITHUB_ENV"
-
-            if [ -z "$WORKERS_DEV_SUBDOMAIN" ]; then
-              echo "::error::WORKERS_DEV_SUBDOMAIN is empty. Set it to a unique workers.dev account subdomain."
-              exit 1
-            fi
-
-            echo "Registering workers.dev subdomain: $WORKERS_DEV_SUBDOMAIN"
             set +e
-            CREATE_SUBDOMAIN_RESPONSE=$(curl -sS -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+            SUBDOMAIN_RESPONSE=$(curl -sS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "{\"subdomain\":\"$WORKERS_DEV_SUBDOMAIN\"}")
-            CREATE_SUBDOMAIN_STATUS=$?
+              -H "Content-Type: application/json")
+            SUBDOMAIN_STATUS=$?
             set -e
 
-            if [ $CREATE_SUBDOMAIN_STATUS -ne 0 ]; then
-              echo "::error::Unable to register workers.dev subdomain. curl exited with $CREATE_SUBDOMAIN_STATUS. Check CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
+            if [ $SUBDOMAIN_STATUS -ne 0 ]; then
+              echo "::error::Unable to check workers.dev subdomain. Check CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
               exit 1
             fi
 
-            set +e
-            CREATE_SUBDOMAIN_SUCCESS=$(echo "$CREATE_SUBDOMAIN_RESPONSE" | jq -r '.success // false' 2>/dev/null)
-            set -e
+            if printf '%s' "$SUBDOMAIN_RESPONSE" | grep -q '"subdomain"[[:space:]]*:[[:space:]]*"[^"]\+"'; then
+              echo "workers.dev subdomain is registered."
+              return 0
+            fi
 
-            if [ "$CREATE_SUBDOMAIN_SUCCESS" != "true" ]; then
-              set +e
-              CF_SUBDOMAIN_ERRORS=$(echo "$CREATE_SUBDOMAIN_RESPONSE" | jq -r '.errors[]?.message // empty' 2>/dev/null)
-              set -e
-
-              if [ -n "$CF_SUBDOMAIN_ERRORS" ]; then
-                while IFS= read -r line; do
-                  echo "::error::Cloudflare workers.dev subdomain error: $line"
-                done <<< "$CF_SUBDOMAIN_ERRORS"
-              else
-                echo "::error::Cloudflare workers.dev subdomain error response: $CREATE_SUBDOMAIN_RESPONSE"
-              fi
-              echo "::error::Unable to register workers.dev subdomain. Set repository variable WORKERS_DEV_SUBDOMAIN to a different unique value, or connect CUSTOM_DOMAIN to this Cloudflare account."
+            if printf '%s' "$SUBDOMAIN_RESPONSE" | grep -q '"code"[[:space:]]*:[[:space:]]*10007'; then
+              echo "::error::This Cloudflare account has no workers.dev subdomain yet."
+              echo "::error::Open https://dash.cloudflare.com/$CLOUDFLARE_ACCOUNT_ID/workers/onboarding and register a workers.dev subdomain, then rerun this workflow."
+              echo "::error::Alternatively, connect CUSTOM_DOMAIN to this same Cloudflare account and wait until the zone is Active."
               exit 1
             fi
 
-            echo "Registered workers.dev subdomain."
-            echo "Waiting for workers.dev DNS to become available..."
-            sleep 90
+            echo "::error::Unable to verify workers.dev subdomain. Cloudflare response: $SUBDOMAIN_RESPONSE"
+            exit 1
           }
           
           if [ -z "$R2_BUCKET_NAME" ]; then
@@ -351,22 +325,12 @@ jobs:
         working-directory: ./mail-worker
         run: |
           echo "🚀 Starting deployment..."
-          if [ "$USE_CUSTOM_DOMAIN" != "true" ] && [ -n "$WORKERS_DEV_SUBDOMAIN" ]; then
-            printf 'y\n%s\ny\n' "$WORKERS_DEV_SUBDOMAIN" \
-              | pnpm wrangler deploy -c wrangler-action.toml 2>&1 \
-              | tee deploy.log \
-              | grep -v "https://.*\.workers\.dev" \
-              | sed -E 's/env\.domain .*/env.domain (***)/' \
-              || true
-            DEPLOY_EXIT_CODE=${PIPESTATUS[1]}
-          else
-            pnpm wrangler deploy -c wrangler-action.toml 2>&1 \
-              | tee deploy.log \
-              | grep -v "https://.*\.workers\.dev" \
-              | sed -E 's/env\.domain .*/env.domain (***)/' \
-              || true
-            DEPLOY_EXIT_CODE=${PIPESTATUS[0]}
-          fi
+          pnpm wrangler deploy -c wrangler-action.toml 2>&1 \
+            | tee deploy.log \
+            | grep -v "https://.*\.workers\.dev" \
+            | sed -E 's/env\.domain .*/env.domain (***)/' \
+            || true
+          DEPLOY_EXIT_CODE=${PIPESTATUS[0]}
           
           if [ $DEPLOY_EXIT_CODE -ne 0 ]; then
             echo "::error::Wrangler deploy failed. Last deploy log lines are shown below."
